@@ -1,0 +1,6 @@
+organization=julianramirez43
+projectKey=JulianRamirez43_MachineLearningProject
+serverUrl=https://sonarcloud.io
+dashboardUrl=https://sonarcloud.io/dashboard?id=JulianRamirez43_MachineLearningProject
+ceTaskId=AaGtY18gbE9rxH86DMdq
+ceTaskUrl=https://sonarcloud.io/api/ce/task?id=AaGtY18gbE9rxH86DMdq
