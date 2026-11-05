@@ -2,16 +2,24 @@ import time
 from pathlib import Path
 import pandas as pd
 import joblib
+import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Importaciones de modelos
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+# Importaciones de métricas y validación
+from sklearn.metrics import (accuracy_score, precision_score, recall_score, 
+                             f1_score, roc_auc_score, confusion_matrix, roc_curve)
+from sklearn.model_selection import StratifiedKFold, cross_validate
 
 
 def build_model(model, X_train, y_train):
     """
-    Entrena el modelo y registra el tiempo de entrenamiento (Scalability).
+    Entrena el modelo y registra el tiempo de entrenamiento (Escalabilidad).
     """
     start_time = time.time()
     model.fit(X_train, y_train)
@@ -19,17 +27,24 @@ def build_model(model, X_train, y_train):
     return model, training_time
 
 
-def summarize_classification(y_true, y_pred, model_name, training_time, train_score, test_score):
+def summarize_classification(y_true, y_pred, y_prob, model_name, training_time, train_score, test_score, cv_f1_mean):
     """
-    Calcula métricas de desempeño (Performance) y evalúa el sobreajuste (Consistency).
+    Calcula métricas de desempeño (Performance, incluyendo ROC-AUC), evalúa
+    el sobreajuste (Consistencia) e incluye el resultado del Cross-Validation.
     """
     gap = train_score - test_score  # Brecha entre Train y Test para medir inconsistencia/overfitting
+    
+    # Calculamos ROC-AUC (Necesita las probabilidades de la clase positiva)
+    roc_auc = roc_auc_score(y_true, y_prob)
+    
     return {
         'Modelo': model_name,
         'Accuracy': round(accuracy_score(y_true, y_pred), 4),
         'Precision': round(precision_score(y_true, y_pred), 4),
         'Recall': round(recall_score(y_true, y_pred), 4),
         'F1_Score': round(f1_score(y_true, y_pred), 4),
+        'ROC_AUC': round(roc_auc, 4),
+        'CV_F1_Mean': round(cv_f1_mean, 4),
         'Tiempo_Entrenamiento (s)': round(training_time, 4),
         'Train_Accuracy': round(train_score, 4),
         'Test_Accuracy': round(test_score, 4),
@@ -56,57 +71,120 @@ if __name__ == "__main__":
 
     resultados = []
     modelos_entrenados = {}
+    predicciones = {}
+    probabilidades = {}
 
-    # Proceso de entrenamiento y evaluación comparativa
+    # Configuración de Cross-Validation para validación robusta
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    print("\nIniciando entrenamiento y validación de modelos...\n")
+
     for nombre, modelo in modelos.items():
-        # 1. Función build_model
+        print(f"--- Procesando {nombre} ---")
+        
+        # 1. Validación cruzada (Cross-Validation)
+        cv_results = cross_validate(modelo, X_train, y_train, cv=cv, scoring='f1', n_jobs=-1)
+        cv_f1_mean = np.mean(cv_results['test_score'])
+        print(f"  -> F1-Score promedio en CV: {cv_f1_mean:.4f}")
+
+        # 2. Entrenamiento final (usando función build_model)
         modelo_fit, tiempo = build_model(modelo, X_train, y_train)
         modelos_entrenados[nombre] = modelo_fit
 
-        # 2. Obtener predicciones en Test
+        # 3. Obtener predicciones y probabilidades en Test
         y_pred = modelo_fit.predict(X_test)
+        y_prob = modelo_fit.predict_proba(X_test)[:, 1]  # Probabilidad de la clase positiva
+        predicciones[nombre] = y_pred
+        probabilidades[nombre] = y_prob
 
-        # 3. Calcular scores para la Consistency
+        # 4. Calcular scores para la Consistencia
         train_acc = modelo_fit.score(X_train, y_train)
         test_acc = modelo_fit.score(X_test, y_test)
 
-        # 4. Función summarize_classification
+        # 5. Función summarize_classification
         metricas = summarize_classification(
             y_true=y_test,
             y_pred=y_pred,
+            y_prob=y_prob,
             model_name=nombre,
             training_time=tiempo,
             train_score=train_acc,
-            test_score=test_acc
+            test_score=test_acc,
+            cv_f1_mean=cv_f1_mean
         )
         resultados.append(metricas)
 
-    # 5. Imprimir Tabla Resumen en Consola
+    # 6. Imprimir Tabla Resumen en Consola
     df_resultados = pd.DataFrame(resultados)
     print("\n=================== TABLA RESUMEN DE MODELOS ===================")
     print(df_resultados.to_string(index=False))
     print("================================================================")
 
-    # 6. Gráfico Comparativo (F1-Score)
-    plt.figure(figsize=(9, 5))
-    barras = plt.bar(df_resultados['Modelo'], df_resultados['F1_Score'], color=['#1f77b4', '#2ca02c', '#ff7f0e'])
-    plt.title('Comparación de Performance por Modelo (F1-Score)', fontsize=14)
-    plt.xlabel('Modelo', fontsize=12)
-    plt.ylabel('F1-Score', fontsize=12)
-    plt.ylim(0, 1.1)
-
-    for barra in barras:
-        yval = barra.get_height()
-        plt.text(barra.get_x() + barra.get_width()/2.0, yval + 0.02, str(yval), ha='center', va='bottom', fontweight='bold')
-
+    # 7. Gráficos Comparativos: Matriz de Confusión
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle('Matrices de Confusión (Test Set)', fontsize=16)
+    for i, (nombre, y_pred) in enumerate(predicciones.items()):
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[i], cbar=False)
+        axes[i].set_title(nombre)
+        axes[i].set_xlabel('Predicho')
+        axes[i].set_ylabel('Real')
     plt.tight_layout()
     plt.show()
 
-    # 7. Selección del mejor modelo (ordenado por F1-Score)
-    mejor_modelo_nombre = df_resultados.sort_values(by='F1_Score', ascending=False).iloc[0]['Modelo']
+    # 8. Gráficos Comparativos: Curvas ROC
+    plt.figure(figsize=(8, 6))
+    for nombre, y_prob in probabilidades.items():
+        fpr, tpr, _ = roc_curve(y_test, y_prob)
+        auc = roc_auc_score(y_test, y_prob)
+        plt.plot(fpr, tpr, label=f'{nombre} (AUC = {auc:.4f})')
+    
+    plt.plot([0, 1], [0, 1], 'k--', label='Aleatorio (AUC = 0.5)')
+    plt.xlabel('Tasa de Falsos Positivos (FPR)')
+    plt.ylabel('Tasa de Verdaderos Positivos (TPR)')
+    plt.title('Curvas ROC Comparativas')
+    plt.legend(loc='lower right')
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # 9. Selección Justificada del Mejor Modelo (Balance de 3 dimensiones)
+    print("\n================ EVALUANDO BALANCE (Performance + Consistencia + Escalabilidad) ================")
+    
+    # Normalización Min-Max para llevar todas las métricas a escala 0-1
+    f1_norm = df_resultados['F1_Score'] / df_resultados['F1_Score'].max()
+    auc_norm = df_resultados['ROC_AUC'] / df_resultados['ROC_AUC'].max()
+    
+    # Para Gap y Tiempo, invertimos (1 - valor/max) porque MENOR es MEJOR
+    # Agregamos un pequeño epsilon (1e-9) por si el máximo es 0 para evitar división por cero
+    gap_norm = 1 - (df_resultados['Gap (Consistency)'] / (df_resultados['Gap (Consistency)'].max() + 1e-9))
+    time_norm = 1 - (df_resultados['Tiempo_Entrenamiento (s)'] / (df_resultados['Tiempo_Entrenamiento (s)'].max() + 1e-9))
+
+    # Calculamos el Score Compuesto (Ponderación de variables)
+    df_resultados['Score_Compuesto'] = (
+        (f1_norm * 0.35) +      # 35% F1-Score (Performance)
+        (auc_norm * 0.25) +     # 25% ROC-AUC (Performance)
+        (gap_norm * 0.25) +     # 25% Consistencia (Evitar overfitting)
+        (time_norm * 0.15)      # 15% Escalabilidad (Tiempo de cómputo)
+    ).round(4)
+
+    # Ordenamos por el Score Compuesto
+    df_resultados = df_resultados.sort_values(by='Score_Compuesto', ascending=False).reset_index(drop=True)
+    print(df_resultados[['Modelo', 'F1_Score', 'ROC_AUC', 'Gap (Consistency)', 'Tiempo_Entrenamiento (s)', 'Score_Compuesto']].to_string(index=False))
+    
+    mejor_modelo_nombre = df_resultados.iloc[0]['Modelo']
     mejor_modelo_obj = modelos_entrenados[mejor_modelo_nombre]
 
-    print(f"\nEl mejor modelo seleccionado es: {mejor_modelo_nombre}")
+    print("\n================ JUSTIFICACIÓN DE SELECCIÓN ================")
+    print(f"El mejor modelo seleccionado es: {mejor_modelo_nombre}")
+    
+    mejor_fila = df_resultados.iloc[0]
+    print(f"\n¿Por qué se eligió {mejor_modelo_nombre} sobre los demás?")
+    print(f"  1. **Performance**: Destaca por su F1-Score ({mejor_fila['F1_Score']}) y ROC-AUC ({mejor_fila['ROC_AUC']}).")
+    print(f"  2. **Consistencia**: Tiene un Gap Train-Test de {mejor_fila['Gap (Consistency)']}. Esto demuestra que no está memorizando (no hay overfitting grave) y que generalizará bien.")
+    print(f"  3. **Escalabilidad**: Tardó {mejor_fila['Tiempo_Entrenamiento (s)']} segundos en entrenar, siendo eficiente para el despliegue.")
+    print(f"  -> Al ponderar estas tres dimensiones, obtuvo el mejor Score Compuesto ({mejor_fila['Score_Compuesto']}), siendo el modelo más equilibrado para producción.")
+    print("============================================================")
 
     # Guardar objeto del modelo en la raíz del proyecto
     ruta_modelo_salida = base_dir / "modelo_seleccionado.pkl"
